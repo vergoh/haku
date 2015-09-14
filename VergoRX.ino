@@ -4,12 +4,17 @@
 
 #define LCDBRIGHTNESS 2
 
-#define CS3PIN 10
-#define CS2PIN 11
-#define CS1PIN 12
+#define BS1PIN 8
+#define BS2PIN 9
 
-#define MINCHAN 1
-#define MAXCHAN 7
+// note that pin order in receiver
+// is inverse compared to transmitter
+#define CS1PIN 10
+#define CS2PIN 11
+#define CS3PIN 12
+
+#define BANDCOUNT 4
+#define CHANSPERBAND 8
 
 #define RSSIPIN               A6
 #define RSSIMAX              560
@@ -24,27 +29,44 @@
 Adafruit_AlphaNum4 lcd = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 lcd2 = Adafruit_AlphaNum4();
 
-int currentchan = 1;
+int currentfreq = 0;
+int currentband = 2;
+int currentchan = 4;
 int currentrssi = 0;
 int scanindex = 0;
 int chanindex = 0;
 boolean rssilocked = false;
 unsigned long locktime = 0;
 
+const char *bandid = "DEAR"; // ImmersionRC (D), boscam E, boscam A, Raceband
+
 const int chanfreq[] = { 
-  5740, 5760, 5780, 5800, 5820, 5840, 5860 };
+  5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880,   // FatShark / ImmersionRC
+  5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945,   // Boscam E
+  5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725,   // Boscam A
+  5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917 }; // RaceBand
+
+const int freqorder[] = {
+  24, 41, 23, 22, 42, 21, 38, 43, 11, 37, 12, 36,
+  44, 13, 35, 14, 34, 45, 15, 33, 16, 46, 32, 17,
+  31, 18, 47, 25, 26, 48, 27, 28 };
 
 void setup()
 {
   Serial.begin(9600); 
 
+  // channel select pins
   pinMode(CS1PIN, OUTPUT);
   pinMode(CS2PIN, OUTPUT);
   pinMode(CS3PIN, OUTPUT);
 
-  digitalWrite(CS1PIN, LOW);
-  digitalWrite(CS2PIN, LOW);
-  digitalWrite(CS3PIN, LOW);
+  // band select pins
+  pinMode(BS1PIN, OUTPUT);
+  pinMode(BS2PIN, OUTPUT);
+
+  // lowest frequency
+  setBand(2);
+  setChannel(4);
 
   // init primary display
   lcd.begin(0x70);
@@ -76,7 +98,7 @@ void loop()
 
 void showInfo()
 {
-  Serial.println("VergoRX 0.5");
+  Serial.println("VergoRX 0.7");
   lcd.clear();
   lcd2.clear();
   lcd.writeDisplay();
@@ -85,7 +107,7 @@ void showInfo()
   showText("VGO ");
   showText2("RX  ");
   lcd2.writeDigitAscii(2, '0', true);
-  lcd2.writeDigitAscii(3, '5');
+  lcd2.writeDigitAscii(3, '7');
   lcd2.writeDisplay();
   delay(3000);
 }
@@ -132,10 +154,14 @@ void scanAnimation()
 
 void showRSSIInfo(int rssi, int rssi_scaled)
 {
-  Serial.print("ch ");
+  Serial.print("band ");
+  Serial.print(currentband);
+  Serial.print(" (");
+  Serial.print(bandid[currentband-1]);
+  Serial.print(") ch ");
   Serial.print(currentchan);
   Serial.print(" (");
-  Serial.print(chanfreq[currentchan-1]);
+  Serial.print(chanfreq[currentchan-1+(currentband-1)*CHANSPERBAND]);
   Serial.print(" MHz) rssi: ");
   Serial.print(rssi);
   Serial.print(" -> ");
@@ -182,7 +208,7 @@ int keepLock()
 
 void setChannel(int channel)
 {
-  // LOW = ON
+  // LOW = ON, connected to ground
   switch (channel) {
   case 1:
     digitalWrite(CS1PIN, LOW);
@@ -190,9 +216,9 @@ void setChannel(int channel)
     digitalWrite(CS3PIN, LOW);
     break;
   case 2:
-    digitalWrite(CS1PIN, HIGH);
+    digitalWrite(CS1PIN, LOW);
     digitalWrite(CS2PIN, LOW);
-    digitalWrite(CS3PIN, LOW);
+    digitalWrite(CS3PIN, HIGH);
     break;
   case 3:
     digitalWrite(CS1PIN, LOW);
@@ -200,14 +226,14 @@ void setChannel(int channel)
     digitalWrite(CS3PIN, LOW);
     break;
   case 4:
-    digitalWrite(CS1PIN, HIGH);
+    digitalWrite(CS1PIN, LOW);
     digitalWrite(CS2PIN, HIGH);
-    digitalWrite(CS3PIN, LOW);
+    digitalWrite(CS3PIN, HIGH);
     break;
   case 5:
-    digitalWrite(CS1PIN, LOW);
+    digitalWrite(CS1PIN, HIGH);
     digitalWrite(CS2PIN, LOW);
-    digitalWrite(CS3PIN, HIGH);
+    digitalWrite(CS3PIN, LOW);
     break;
   case 6:
     digitalWrite(CS1PIN, HIGH);
@@ -215,7 +241,12 @@ void setChannel(int channel)
     digitalWrite(CS3PIN, HIGH);
     break;
   case 7:
-    digitalWrite(CS1PIN, LOW);
+    digitalWrite(CS1PIN, HIGH);
+    digitalWrite(CS2PIN, HIGH);
+    digitalWrite(CS3PIN, LOW);
+    break;
+  case 8:
+    digitalWrite(CS1PIN, HIGH);
     digitalWrite(CS2PIN, HIGH);
     digitalWrite(CS3PIN, HIGH);
     break;
@@ -224,17 +255,45 @@ void setChannel(int channel)
   }
 }
 
+void setBand(int band)
+{
+  // LOW = ON, connected to ground
+  switch (band) {
+  case 1: // fatshark / immersionrc
+    digitalWrite(BS1PIN, HIGH);
+    digitalWrite(BS2PIN, HIGH);
+    break;
+  case 2: // boscam e
+    digitalWrite(BS1PIN, HIGH);
+    digitalWrite(BS2PIN, LOW);
+    break;
+  case 3: // boscam a
+    digitalWrite(BS1PIN, LOW);
+    digitalWrite(BS2PIN, HIGH);
+    break;
+  case 4: // raceband
+    digitalWrite(BS1PIN, LOW);
+    digitalWrite(BS2PIN, LOW);
+    break;
+  }
+}
+
 void changeChannel()
 {
   char freq[5];
 
-  currentchan++;
-  if (currentchan > MAXCHAN) {
-    currentchan = MINCHAN; 
+  currentfreq++;
+  if (currentfreq >= BANDCOUNT*CHANSPERBAND-1) {
+    currentfreq = 0; 
   }
+
+  currentband = freqorder[currentfreq] / 10;
+  currentchan = freqorder[currentfreq] - (currentband * 10);
+
+  setBand(currentband);
   setChannel(currentchan);
 
-  snprintf(freq, 5, "%4d", chanfreq[currentchan-1]);
+  snprintf(freq, 5, "%4d", chanfreq[currentchan-1+(currentband-1)*CHANSPERBAND]);
   showText2(freq);
 
   delay(RSSISETTLETIME);
@@ -244,7 +303,7 @@ void showChanInfo()
 {
   char t[5];
 
-  snprintf(t, 5, "%d %02d", currentchan, currentrssi);
+  snprintf(t, 5, "%c%d%02d", bandid[currentband-1], currentchan, currentrssi);
   for (int i=0; i<4; i++) {
     if (i == 1) {
       lcd.writeDigitAscii(i, t[i], true);
