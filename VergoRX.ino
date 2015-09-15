@@ -2,6 +2,8 @@
 #include "Adafruit_LEDBackpack.h"
 #include "Adafruit_GFX.h"
 
+#define DEBUG 1
+
 #define LCDBRIGHTNESS 2
 
 #define BS1PIN 8
@@ -13,32 +15,35 @@
 #define CS2PIN 11
 #define CS3PIN 12
 
-#define BANDCOUNT 4
+#define BANDCOUNT    4
 #define CHANSPERBAND 8
 
-#define RSSIPIN               A6
-#define RSSIMAX              560
+#define RSSIPIN        A6
+#define RSSIMAX        560
 #define RSSIMINLOCK    50
-#define RSSINOISE          160
-#define RSSISETTLETIME  200
+#define RSSISETTLETIME 200
 
-#define KEEPLOCK          5
-#define LOCKTESTDELAY 500
+#define RSSIKEEPLOCK       5000
+#define RSSICHECKINTERVAL  500
 
-// display object
+#define MAJORVERSION '0'
+#define MINORVERSION '9'
+
 Adafruit_AlphaNum4 lcd = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 lcd2 = Adafruit_AlphaNum4();
 
 int currentfreq = 0;
-int currentband = 2;
-int currentchan = 4;
+int currentband = 0;
+int currentchan = 0;
 int currentrssi = 0;
 int scanindex = 0;
 int chanindex = 0;
+int rssinoisefloor = RSSIMAX;
 boolean rssilocked = false;
 unsigned long locktime = 0;
+unsigned long lastrssicheck = 0;
 
-const char *bandid = "DEAR"; // ImmersionRC (D), boscam E, boscam A, Raceband
+const char *bandid = "DEAR"; // ImmersionRC (D), Boscam E, Boscam A, RaceBand
 
 const int chanfreq[] = { 
   5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880,   // FatShark / ImmersionRC
@@ -46,10 +51,12 @@ const int chanfreq[] = {
   5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725,   // Boscam A
   5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917 }; // RaceBand
 
+// 18 is intentionally missing before 47 as the 5880 frequency is
+// a duplicate and not officially in the ImmersionRC band list
 const int freqorder[] = {
   24, 41, 23, 22, 42, 21, 38, 43, 11, 37, 12, 36,
   44, 13, 35, 14, 34, 45, 15, 33, 16, 46, 32, 17,
-  31, 18, 47, 25, 26, 48, 27, 28 };
+  31, 47, 25, 26, 48, 27, 28 };
 
 void setup()
 {
@@ -64,10 +71,6 @@ void setup()
   pinMode(BS1PIN, OUTPUT);
   pinMode(BS2PIN, OUTPUT);
 
-  // lowest frequency
-  setBand(2);
-  setChannel(4);
-
   // init primary display
   lcd.begin(0x70);
   lcd.clear();
@@ -81,10 +84,15 @@ void setup()
   lcd2.writeDisplay();
 
   showInfo();
+  setRSSINoiseFloor();
 }
 
 void loop()
 {
+  if ( (rssilocked || keepLock()) && (millis()-lastrssicheck < RSSICHECKINTERVAL) ) {
+    return;
+  }
+
   checkRssiLock();
   if ( !rssilocked && !keepLock() ) {
     scanAnimation();
@@ -92,13 +100,15 @@ void loop()
   }
   else {
     showChanInfo();
-    delay(LOCKTESTDELAY);
   }
 }
 
 void showInfo()
 {
-  Serial.println("VergoRX 0.7");
+  Serial.print("VergoRX ");
+  Serial.print(MAJORVERSION);
+  Serial.print(".");
+  Serial.println(MINORVERSION);
   lcd.clear();
   lcd2.clear();
   lcd.writeDisplay();
@@ -106,10 +116,9 @@ void showInfo()
 
   showText("VGO ");
   showText2("RX  ");
-  lcd2.writeDigitAscii(2, '0', true);
-  lcd2.writeDigitAscii(3, '7');
+  lcd2.writeDigitAscii(2, MAJORVERSION, true);
+  lcd2.writeDigitAscii(3, MINORVERSION);
   lcd2.writeDisplay();
-  delay(3000);
 }
 
 void showText(char *buffer)
@@ -118,7 +127,7 @@ void showText(char *buffer)
     return;
   }
 
-  for (int i=0; i<4; i++) {
+  for (int i = 0; i < 4; i++) {
     lcd.writeDigitAscii(i, buffer[i]);
   }
   lcd.writeDisplay();
@@ -130,7 +139,7 @@ void showText2(char *buffer)
     return;
   }
 
-  for (int i=0; i<4; i++) {
+  for (int i = 0; i < 4; i++) {
     lcd2.writeDigitAscii(i, buffer[i]);
   }
   lcd2.writeDisplay();
@@ -139,10 +148,10 @@ void showText2(char *buffer)
 void scanAnimation()
 {
   char buffer[5];
-  char anim[] = "-\\|/";
+  char spinner[] = "-\\|/";
 
-  snprintf(buffer, 5, "%c %02d", anim[scanindex], currentrssi);
-  for (int i=0; i<4; i++) {
+  snprintf(buffer, 5, "%c %02d", spinner[scanindex], currentrssi);
+  for (int i = 0; i < 4; i++) {
     lcd.writeDigitAscii(i, buffer[i]);
   }
   lcd.writeDisplay();
@@ -154,6 +163,9 @@ void scanAnimation()
 
 void showRSSIInfo(int rssi, int rssi_scaled)
 {
+  if (!DEBUG) {
+    return;
+  }
   Serial.print("band ");
   Serial.print(currentband);
   Serial.print(" (");
@@ -169,30 +181,68 @@ void showRSSIInfo(int rssi, int rssi_scaled)
   Serial.println("%");
 }
 
-int readRSSI()
+int readRSSI(boolean raw = false)
 {
   int rssi = 0;
   int rssi_scaled = 0;
-  for (int i=0; i<10; i++) {
-    rssi += analogRead(RSSIPIN);
-    delay(20);
+
+  rssi = analogRead(RSSIPIN);
+
+  if (raw) {
+    return rssi;
   }
-  rssi = rssi / 10 - RSSINOISE;
-  rssi_scaled = rssi / (float)(RSSIMAX - RSSINOISE) * 100;
+
+  rssi = rssi  - rssinoisefloor;
+  if (rssi < 0) {
+    rssi = 0;    
+  }
+  rssi_scaled = rssi / (float)(RSSIMAX - rssinoisefloor) * 100;
+  if (rssi_scaled >= 100) {
+    rssi_scaled = 99;
+  }
   showRSSIInfo(rssi, rssi_scaled);
   return rssi_scaled;
+}
+
+void channelOptimizer()
+{
+  int rssi;
+
+  debugprintln("optimizing...");
+  // nothing past highest frequency
+  if (currentfreq == sizeof(freqorder)/sizeof(int)-1) {
+    debugprintln("optimizer: at end of frequency list");
+    return; 
+  }
+
+  changeChannel();
+  rssi = readRSSI();
+  if (rssi <= currentrssi) {
+    currentfreq -= 2;
+    debugprintln("optimizer: previous channel was better");
+    changeChannel();
+    return;
+  } 
+  else {
+    currentrssi = rssi;
+  }
+  channelOptimizer();
 }
 
 void checkRssiLock()
 {
   currentrssi = readRSSI();
   if (currentrssi >= RSSIMINLOCK) { 
+    if (!rssilocked && !keepLock()) {
+      channelOptimizer();
+    }
     rssilocked = true;
     locktime = millis();
   } 
   else {
     rssilocked = false; 
   }
+  lastrssicheck = millis();
 }
 
 int keepLock()
@@ -200,10 +250,77 @@ int keepLock()
   if (locktime == 0) {
     return 0; 
   }
-  if (millis()-locktime > KEEPLOCK*1000) {
+  if (millis()-locktime > RSSIKEEPLOCK) {
     return 0; 
   }
   return 1;
+}
+
+void changeChannel()
+{
+  char freq[5];
+
+  currentfreq++;
+  if (currentfreq >= sizeof(freqorder)/sizeof(int)-1) {
+    currentfreq = 0; 
+  }
+
+  setBand(freqorder[currentfreq] / 10);
+  setChannel(freqorder[currentfreq] - (currentband * 10));
+
+  snprintf(freq, 5, "%4d", chanfreq[currentchan-1+(currentband-1)*CHANSPERBAND]);
+  showText2(freq);
+
+  delay(RSSISETTLETIME);
+}
+
+void setRSSINoiseFloor()
+{
+  int rssi = 0;
+
+  debugprintln("scanning rssi noise floor..."); 
+
+  for (int i = 0; i < sizeof(freqorder)/sizeof(int)-1; i = i + 2) {
+    setBand(freqorder[i] / 10);
+    setChannel(freqorder[i] - (currentband * 10));
+    delay(200);
+    rssi = readRSSI(true);
+    if (rssi < rssinoisefloor) {
+      rssinoisefloor = rssi;
+    }
+  }
+
+  if (DEBUG) {
+    Serial.print("rssi noise floor: ");
+    Serial.println(rssinoisefloor);
+  }
+
+  setBand(freqorder[0] / 10);
+  setChannel(freqorder[0] - (currentband * 10));
+  delay(RSSISETTLETIME);
+}
+
+void showChanInfo()
+{
+  char t[5];
+
+  snprintf(t, 5, "%c%d%02d", bandid[currentband-1], currentchan, currentrssi);
+  for (int i = 0; i < 4; i++) {
+    if (i == 1) {
+      lcd.writeDigitAscii(i, t[i], true);
+    } 
+    else{
+      lcd.writeDigitAscii(i, t[i]);
+    }
+  }
+  lcd.writeDisplay();
+}
+
+void debugprintln(char *string)
+{
+  if (DEBUG) {
+    Serial.println(string); 
+  }
 }
 
 void setChannel(int channel)
@@ -253,6 +370,7 @@ void setChannel(int channel)
   default:
     break; 
   }
+  currentchan = channel;
 }
 
 void setBand(int band)
@@ -275,44 +393,9 @@ void setBand(int band)
     digitalWrite(BS1PIN, LOW);
     digitalWrite(BS2PIN, LOW);
     break;
+  default:
+    break;
   }
+  currentband = band;
 }
-
-void changeChannel()
-{
-  char freq[5];
-
-  currentfreq++;
-  if (currentfreq >= BANDCOUNT*CHANSPERBAND-1) {
-    currentfreq = 0; 
-  }
-
-  currentband = freqorder[currentfreq] / 10;
-  currentchan = freqorder[currentfreq] - (currentband * 10);
-
-  setBand(currentband);
-  setChannel(currentchan);
-
-  snprintf(freq, 5, "%4d", chanfreq[currentchan-1+(currentband-1)*CHANSPERBAND]);
-  showText2(freq);
-
-  delay(RSSISETTLETIME);
-}
-
-void showChanInfo()
-{
-  char t[5];
-
-  snprintf(t, 5, "%c%d%02d", bandid[currentband-1], currentchan, currentrssi);
-  for (int i=0; i<4; i++) {
-    if (i == 1) {
-      lcd.writeDigitAscii(i, t[i], true);
-    } 
-    else{
-      lcd.writeDigitAscii(i, t[i]);
-    }
-  }
-  lcd.writeDisplay();
-}
-
 
