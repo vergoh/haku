@@ -9,8 +9,8 @@
 #define BS1PIN 8
 #define BS2PIN 9
 
-// note that pin order in receiver
-// is inverse compared to transmitter
+// note that pin order in receiver is inverse
+// compared to fatshark / immersionrc transmitters
 #define CS1PIN 10
 #define CS2PIN 11
 #define CS3PIN 12
@@ -32,16 +32,18 @@
 Adafruit_AlphaNum4 lcd = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 lcd2 = Adafruit_AlphaNum4();
 
-int currentfreq = 0;
-int currentband = 0;
-int currentchan = 0;
+byte currentfreq = 0;
+byte currentband = 0;
+byte currentchan = 0;
 int currentrssi = 0;
-int scanindex = 0;
-int chanindex = 0;
+byte scanindex = 0;
 int rssinoisefloor = RSSIMAX;
 boolean rssilocked = false;
 unsigned long locktime = 0;
 unsigned long lastrssicheck = 0;
+
+const byte enabledbands[] = { 
+  1, 2, 3 };
 
 const char *bandid = "DEAR"; // ImmersionRC (D), Boscam E, Boscam A, RaceBand
 
@@ -53,7 +55,7 @@ const int chanfreq[] = {
 
 // 18 is intentionally missing before 47 as the 5880 frequency is
 // a duplicate and not officially in the ImmersionRC band list
-const int freqorder[] = {
+const byte freqorder[] = {
   24, 41, 23, 22, 42, 21, 38, 43, 11, 37, 12, 36,
   44, 13, 35, 14, 34, 45, 15, 33, 16, 46, 32, 17,
   31, 47, 25, 26, 48, 27, 28 };
@@ -85,6 +87,8 @@ void setup()
 
   showInfo();
   setRSSINoiseFloor();
+  showSetup();
+  delay(4000);
 }
 
 void loop()
@@ -121,13 +125,39 @@ void showInfo()
   lcd2.writeDisplay();
 }
 
+void showSetup()
+{
+  byte chancount;
+  char buffer[5];
+
+  chancount = getChanCount();
+  snprintf(buffer, 5, "%02dch", chancount);
+  showText(buffer);
+
+  snprintf(buffer, 5, "____");;
+  for (byte i = 0; i < 4; i++) {
+    if (isBandEnabled(i+1)) {
+      buffer[i] = bandid[i];
+    }
+  }
+  showText2(buffer);
+
+  if (!DEBUG) {
+    return; 
+  }
+
+  Serial.print(chancount);
+  Serial.print(" channels, active bands: ");
+  Serial.println(buffer);
+}
+
 void showText(char *buffer)
 {
   if (strlen(buffer) != 4) {
     return;
   }
 
-  for (int i = 0; i < 4; i++) {
+  for (byte i = 0; i < 4; i++) {
     lcd.writeDigitAscii(i, buffer[i]);
   }
   lcd.writeDisplay();
@@ -139,7 +169,7 @@ void showText2(char *buffer)
     return;
   }
 
-  for (int i = 0; i < 4; i++) {
+  for (byte i = 0; i < 4; i++) {
     lcd2.writeDigitAscii(i, buffer[i]);
   }
   lcd2.writeDisplay();
@@ -151,7 +181,7 @@ void scanAnimation()
   char spinner[] = "-\\|/";
 
   snprintf(buffer, 5, "%c %02d", spinner[scanindex], currentrssi);
-  for (int i = 0; i < 4; i++) {
+  for (byte i = 0; i < 4; i++) {
     lcd.writeDigitAscii(i, buffer[i]);
   }
   lcd.writeDisplay();
@@ -207,7 +237,9 @@ int readRSSI(boolean raw = false)
 void channelOptimizer()
 {
   int rssi;
+  byte prevfreq;
 
+  showText("TUNE");
   debugprintln("optimizing...");
   // nothing past highest frequency
   if (currentfreq == sizeof(freqorder)/sizeof(int)-1) {
@@ -215,11 +247,12 @@ void channelOptimizer()
     return; 
   }
 
+  prevfreq = currentfreq;
   changeChannel();
   rssi = readRSSI();
   if (rssi <= currentrssi) {
-    currentfreq -= 2;
     debugprintln("optimizer: previous channel was better");
+    currentfreq = prevfreq - 1;
     changeChannel();
     return;
   } 
@@ -245,27 +278,56 @@ void checkRssiLock()
   lastrssicheck = millis();
 }
 
-int keepLock()
+boolean keepLock()
 {
   if (locktime == 0) {
-    return 0; 
+    return false;
   }
   if (millis()-locktime > RSSIKEEPLOCK) {
-    return 0; 
+    return false;
   }
-  return 1;
+  return true;
+}
+
+byte getChanCount()
+{
+  byte count = 0;
+  for (byte i = 0; i < sizeof(freqorder)/sizeof(byte); i++) {
+    if (isBandEnabled(freqorder[i] / 10)) {
+      count++; 
+    }
+  }
+  return count;
+}
+
+boolean isBandEnabled(byte band)
+{
+  for (byte i = 0; i < sizeof(enabledbands)/sizeof(byte); i++) {
+    if (enabledbands[i] == band) {
+      return true;         
+    }
+  } 
+  return false;
 }
 
 void changeChannel()
 {
   char freq[5];
+  byte band;
 
   currentfreq++;
-  if (currentfreq >= sizeof(freqorder)/sizeof(int)-1) {
+  if (currentfreq >= sizeof(freqorder)/sizeof(byte)-1) {
     currentfreq = 0; 
+  } 
+
+  band = freqorder[currentfreq] / 10;
+
+  if (!isBandEnabled(band)) {
+    changeChannel();
+    return; 
   }
 
-  setBand(freqorder[currentfreq] / 10);
+  setBand(band);
   setChannel(freqorder[currentfreq] - (currentband * 10));
 
   snprintf(freq, 5, "%4d", chanfreq[currentchan-1+(currentband-1)*CHANSPERBAND]);
@@ -280,7 +342,7 @@ void setRSSINoiseFloor()
 
   debugprintln("scanning rssi noise floor..."); 
 
-  for (int i = 0; i < sizeof(freqorder)/sizeof(int)-1; i = i + 2) {
+  for (byte i = 0; i < sizeof(freqorder)/sizeof(byte); i = i + 2) {
     setBand(freqorder[i] / 10);
     setChannel(freqorder[i] - (currentband * 10));
     delay(200);
@@ -305,7 +367,7 @@ void showChanInfo()
   char t[5];
 
   snprintf(t, 5, "%c%d%02d", bandid[currentband-1], currentchan, currentrssi);
-  for (int i = 0; i < 4; i++) {
+  for (byte i = 0; i < 4; i++) {
     if (i == 1) {
       lcd.writeDigitAscii(i, t[i], true);
     } 
@@ -323,7 +385,7 @@ void debugprintln(char *string)
   }
 }
 
-void setChannel(int channel)
+void setChannel(byte channel)
 {
   // LOW = ON, connected to ground
   switch (channel) {
@@ -373,7 +435,7 @@ void setChannel(int channel)
   currentchan = channel;
 }
 
-void setBand(int band)
+void setBand(byte band)
 {
   // LOW = ON, connected to ground
   switch (band) {
@@ -398,4 +460,8 @@ void setBand(int band)
   }
   currentband = band;
 }
+
+
+
+
 
