@@ -6,6 +6,9 @@
 
 #define LCDBRIGHTNESS 2
 
+#define HOLDBPIN 6
+#define NEXTBPIN 7
+
 #define BS1PIN 8
 #define BS2PIN 9
 
@@ -26,8 +29,10 @@
 #define RSSIKEEPLOCK       5000
 #define RSSICHECKINTERVAL  500
 
-#define MAJORVERSION '0'
-#define MINORVERSION '9'
+#define BUTTONPRESSTIME 50
+
+#define MAJORVERSION '1'
+#define MINORVERSION '0'
 
 Adafruit_AlphaNum4 lcd = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 lcd2 = Adafruit_AlphaNum4();
@@ -41,6 +46,16 @@ int rssinoisefloor = RSSIMAX;
 boolean rssilocked = false;
 unsigned long locktime = 0;
 unsigned long lastrssicheck = 0;
+unsigned long channelchange = 0;
+
+boolean hold = false;
+boolean inhold = false;
+boolean next = false;
+
+boolean holdbstate = false;
+boolean nextbstate = false;
+unsigned long holdbhigh = 0;
+unsigned long nextbhigh = 0;
 
 const byte enabledbands[] = { 
   1, 2, 3 };
@@ -63,6 +78,10 @@ const byte freqorder[] = {
 void setup()
 {
   Serial.begin(9600); 
+
+  // buttons
+  pinMode(HOLDBPIN, INPUT_PULLUP);
+  pinMode(NEXTBPIN, INPUT_PULLUP);
 
   // channel select pins
   pinMode(CS1PIN, OUTPUT);
@@ -88,17 +107,30 @@ void setup()
   showInfo();
   setRSSINoiseFloor();
   showSetup();
-  delay(4000);
+  delay(3000);
 }
 
 void loop()
 {
-  if ( (rssilocked || keepLock()) && (millis()-lastrssicheck < RSSICHECKINTERVAL) ) {
+  checkButtons();
+
+  if (next) {
+    next = false;
+    locktime = 0;
+    lastrssicheck = 0;
+    changeChannel();
+  }
+
+  if (millis()-channelchange < RSSISETTLETIME) {
+    return;
+  }
+
+  if ( (rssilocked || keepLock() || hold) && (millis()-lastrssicheck < RSSICHECKINTERVAL) ) {
     return;
   }
 
   checkRssiLock();
-  if ( !rssilocked && !keepLock() ) {
+  if ( !rssilocked && !keepLock() && !hold ) {
     scanAnimation();
     changeChannel();
   }
@@ -134,7 +166,8 @@ void showSetup()
   snprintf(buffer, 5, "%02dch", chancount);
   showText(buffer);
 
-  snprintf(buffer, 5, "____");;
+  snprintf(buffer, 5, "____");
+
   for (byte i = 0; i < 4; i++) {
     if (isBandEnabled(i+1)) {
       buffer[i] = bandid[i];
@@ -149,6 +182,55 @@ void showSetup()
   Serial.print(chancount);
   Serial.print(" channels, active bands: ");
   Serial.println(buffer);
+}
+
+void checkButtons()
+{
+  // "hold" button, pin low when pressed
+  if (digitalRead(HOLDBPIN) == LOW) {
+    if (holdbstate && (millis()-holdbhigh > BUTTONPRESSTIME)) {
+      hold = !hold;
+      if (hold) {
+        debugprintln("hold enabled");
+      } else {
+        debugprintln("hold disabled");
+      }
+      while(true) {
+        if (digitalRead(HOLDBPIN) == HIGH) {
+          break; 
+        }
+        delay(20);
+      }
+    } 
+    else {
+      holdbstate = true;
+    }
+  } 
+  else {
+    holdbstate = false;
+    holdbhigh = millis();
+  }
+
+  // "next" button, pin low when pressed
+  if (digitalRead(NEXTBPIN) == LOW) {
+    if (nextbstate && (millis()-nextbhigh > BUTTONPRESSTIME)) {
+      next = true;
+      debugprintln("next button pressed");
+      while(true) {
+        if (digitalRead(NEXTBPIN) == HIGH) {
+          break; 
+        }
+        delay(20);
+      }
+    } 
+    else {
+      nextbstate = true;
+    }
+  } 
+  else {
+    nextbstate = false;
+    nextbhigh = millis();
+  }
 }
 
 void showText(char *buffer)
@@ -238,6 +320,10 @@ void channelOptimizer()
 {
   int rssi;
   byte prevfreq;
+
+  if (hold) {
+    return; 
+  }
 
   showText("TUNE");
   debugprintln("optimizing...");
@@ -329,11 +415,10 @@ void changeChannel()
 
   setBand(band);
   setChannel(freqorder[currentfreq] - (currentband * 10));
+  channelchange = millis();
 
   snprintf(freq, 5, "%4d", chanfreq[currentchan-1+(currentband-1)*CHANSPERBAND]);
   showText2(freq);
-
-  delay(RSSISETTLETIME);
 }
 
 void setRSSINoiseFloor()
@@ -345,7 +430,7 @@ void setRSSINoiseFloor()
   for (byte i = 0; i < sizeof(freqorder)/sizeof(byte); i = i + 2) {
     setBand(freqorder[i] / 10);
     setChannel(freqorder[i] - (currentband * 10));
-    delay(200);
+    delay(RSSISETTLETIME);
     rssi = readRSSI(true);
     if (rssi < rssinoisefloor) {
       rssinoisefloor = rssi;
@@ -359,7 +444,7 @@ void setRSSINoiseFloor()
 
   setBand(freqorder[0] / 10);
   setChannel(freqorder[0] - (currentband * 10));
-  delay(RSSISETTLETIME);
+  channelchange = millis();
 }
 
 void showChanInfo()
@@ -368,7 +453,7 @@ void showChanInfo()
 
   snprintf(t, 5, "%c%d%02d", bandid[currentband-1], currentchan, currentrssi);
   for (byte i = 0; i < 4; i++) {
-    if (i == 1) {
+    if (i == 1 || (hold && i == 0)) {
       lcd.writeDigitAscii(i, t[i], true);
     } 
     else{
@@ -460,8 +545,5 @@ void setBand(byte band)
   }
   currentband = band;
 }
-
-
-
 
 
