@@ -4,7 +4,11 @@
 
 #define DEBUG 1
 
-#define LCDBRIGHTNESS 2
+#define OUTDOORBRIGHTNESS 200
+#define LCDINDOORBRIGHTNESS 2
+#define LCDOUTDOORBRIGHTNESS 15
+
+#define BRIGHTNESSPIN  A1
 
 #define HOLDBPIN 6
 #define NEXTBPIN 7
@@ -22,7 +26,7 @@
 #define CHANSPERBAND 8
 
 #define RSSIPIN        A6
-#define RSSIMAX        560
+#define RSSIMAX        550
 #define RSSIMINLOCK    50
 #define RSSISETTLETIME 200
 
@@ -32,7 +36,7 @@
 #define BUTTONPRESSTIME 50
 
 #define MAJORVERSION '1'
-#define MINORVERSION '0'
+#define MINORVERSION '1'
 
 Adafruit_AlphaNum4 lcd = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 lcd2 = Adafruit_AlphaNum4();
@@ -49,7 +53,6 @@ unsigned long lastrssicheck = 0;
 unsigned long channelchange = 0;
 
 boolean hold = false;
-boolean inhold = false;
 boolean next = false;
 
 boolean holdbstate = false;
@@ -95,17 +98,19 @@ void setup()
   // init primary display
   lcd.begin(0x70);
   lcd.clear();
-  lcd.setBrightness(LCDBRIGHTNESS);
   lcd.writeDisplay();
 
   // init secondary display
   lcd2.begin(0x71);
   lcd2.clear();
-  lcd2.setBrightness(LCDBRIGHTNESS);
   lcd2.writeDisplay();
 
+  setBrightness();
+
   showInfo();
-  setRSSINoiseFloor();
+  //setRSSINoiseFloor();
+  delay(2000);
+  rssinoisefloor = 160;
   showSetup();
   delay(3000);
 }
@@ -184,6 +189,32 @@ void showSetup()
   Serial.println(buffer);
 }
 
+void setBrightness()
+{
+  byte brightness = LCDINDOORBRIGHTNESS;
+  int b = 0;
+
+  b = 1023 - analogRead(BRIGHTNESSPIN);
+
+  if (b >= OUTDOORBRIGHTNESS) {
+    brightness = LCDOUTDOORBRIGHTNESS;
+  }
+
+  lcd.setBrightness(brightness);
+  lcd.writeDisplay();
+  lcd2.setBrightness(brightness);
+  lcd2.writeDisplay();
+
+  if (!DEBUG) {
+    return;
+  }
+
+  Serial.print("brightness: ");
+  Serial.print(b);
+  Serial.print(" -> LCD: ");
+  Serial.println(brightness);
+}
+
 void checkButtons()
 {
   // "hold" button, pin low when pressed
@@ -192,7 +223,8 @@ void checkButtons()
       hold = !hold;
       if (hold) {
         debugprintln("hold enabled");
-      } else {
+      } 
+      else {
         debugprintln("hold disabled");
       }
       while(true) {
@@ -275,8 +307,13 @@ void scanAnimation()
 
 void showRSSIInfo(int rssi, int rssi_scaled)
 {
+  char buffer[5];
   if (!DEBUG) {
     return;
+  }
+  if (rssilocked || hold) {
+    snprintf(buffer, 5, "%4d", rssi);
+    showText2(buffer);
   }
   Serial.print("band ");
   Serial.print(currentband);
@@ -312,7 +349,7 @@ int readRSSI(boolean raw = false)
   if (rssi_scaled >= 100) {
     rssi_scaled = 99;
   }
-  showRSSIInfo(rssi, rssi_scaled);
+  showRSSIInfo(rssi + rssinoisefloor, rssi_scaled);
   return rssi_scaled;
 }
 
@@ -335,6 +372,7 @@ void channelOptimizer()
 
   prevfreq = currentfreq;
   changeChannel();
+  delay(RSSISETTLETIME);
   rssi = readRSSI();
   if (rssi <= currentrssi) {
     debugprintln("optimizer: previous channel was better");
@@ -545,5 +583,6 @@ void setBand(byte band)
   }
   currentband = band;
 }
+
 
 
