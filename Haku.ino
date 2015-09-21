@@ -2,7 +2,7 @@
 #include "Adafruit_LEDBackpack.h"
 #include "Adafruit_GFX.h"
 
-#define DEBUG 1
+#define DEBUG 0
 
 #define OUTDOORBRIGHTNESS 200
 #define LCDINDOORBRIGHTNESS 2
@@ -22,31 +22,33 @@
 #define CS2PIN 11
 #define CS3PIN 12
 
-#define BANDCOUNT    4
-#define CHANSPERBAND 8
-
 #define RSSIPIN        A6
-#define RSSIMAX        550
 #define RSSIMINLOCK    50
+#define RSSIMINRANGE 200
 #define RSSISETTLETIME 200
 
 #define RSSIKEEPLOCK       5000
 #define RSSICHECKINTERVAL  500
 
+#define BANDCOUNT    4
+#define CHANSPERBAND 8
+
 #define BUTTONPRESSTIME 50
 
 #define MAJORVERSION '1'
-#define MINORVERSION '1'
+#define MINORVERSION '2'
 
 Adafruit_AlphaNum4 lcd = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 lcd2 = Adafruit_AlphaNum4();
+
+int rssimin = 1024;
+int rssimax = 0;
 
 byte currentfreq = 0;
 byte currentband = 0;
 byte currentchan = 0;
 int currentrssi = 0;
 byte scanindex = 0;
-int rssinoisefloor = RSSIMAX;
 boolean rssilocked = false;
 unsigned long locktime = 0;
 unsigned long lastrssicheck = 0;
@@ -105,12 +107,9 @@ void setup()
   lcd2.clear();
   lcd2.writeDisplay();
 
-  setBrightness();
-
   showInfo();
-  //setRSSINoiseFloor();
-  delay(2000);
-  rssinoisefloor = 160;
+  setBrightness();
+  initRSSIRange();
   showSetup();
   delay(3000);
 }
@@ -146,7 +145,7 @@ void loop()
 
 void showInfo()
 {
-  Serial.print("VergoRX ");
+  Serial.print("Haku v");
   Serial.print(MAJORVERSION);
   Serial.print(".");
   Serial.println(MINORVERSION);
@@ -155,10 +154,9 @@ void showInfo()
   lcd.writeDisplay();
   lcd2.writeDisplay();
 
-  showText("VGO ");
-  showText2("RX  ");
-  lcd2.writeDigitAscii(2, MAJORVERSION, true);
-  lcd2.writeDigitAscii(3, MINORVERSION);
+  showText("HAKU");
+  lcd2.writeDigitAscii(1, MAJORVERSION, true);
+  lcd2.writeDigitAscii(2, MINORVERSION);
   lcd2.writeDisplay();
 }
 
@@ -294,7 +292,12 @@ void scanAnimation()
   char buffer[5];
   char spinner[] = "-\\|/";
 
-  snprintf(buffer, 5, "%c %02d", spinner[scanindex], currentrssi);
+  if (rssimax-rssimin >= RSSIMINRANGE) {
+    snprintf(buffer, 5, "%c %02d", spinner[scanindex], getScaledRSSI(currentrssi));
+  } 
+  else {
+    snprintf(buffer, 5, "%c%03d", spinner[scanindex], currentrssi);
+  }
   for (byte i = 0; i < 4; i++) {
     lcd.writeDigitAscii(i, buffer[i]);
   }
@@ -305,8 +308,25 @@ void scanAnimation()
   }
 }
 
-void showRSSIInfo(int rssi, int rssi_scaled)
+int getScaledRSSI(int rawrssi)
 {
+  int rssi = 0;
+  int rssi_scaled = 0;
+
+  rssi = rawrssi  - rssimin;
+  if (rssi < 0) {
+    rssi = 0;    
+  }
+  rssi_scaled = rssi / (float)(rssimax - rssimin) * 100;
+  if (rssi_scaled >= 100) {
+    rssi_scaled = 99;
+  }
+  return rssi_scaled;
+}
+
+void showRSSIInfo(int rssi)
+{
+  int rssi_scaled;
   char buffer[5];
   if (!DEBUG) {
     return;
@@ -315,6 +335,7 @@ void showRSSIInfo(int rssi, int rssi_scaled)
     snprintf(buffer, 5, "%4d", rssi);
     showText2(buffer);
   }
+  rssi_scaled = getScaledRSSI(rssi);
   Serial.print("band ");
   Serial.print(currentband);
   Serial.print(" (");
@@ -330,27 +351,25 @@ void showRSSIInfo(int rssi, int rssi_scaled)
   Serial.println("%");
 }
 
-int readRSSI(boolean raw = false)
+int readRSSI(boolean noinfo = false)
 {
-  int rssi = 0;
-  int rssi_scaled = 0;
+  int rawrssi = 0;
 
-  rssi = analogRead(RSSIPIN);
+  rawrssi = analogRead(RSSIPIN);
 
-  if (raw) {
-    return rssi;
+  if (rawrssi < rssimin) {
+    rssimin = rawrssi;
+  }
+  if (rawrssi > rssimax) {
+    rssimax = rawrssi; 
   }
 
-  rssi = rssi  - rssinoisefloor;
-  if (rssi < 0) {
-    rssi = 0;    
+  if (noinfo) {
+    return rawrssi;
   }
-  rssi_scaled = rssi / (float)(RSSIMAX - rssinoisefloor) * 100;
-  if (rssi_scaled >= 100) {
-    rssi_scaled = 99;
-  }
-  showRSSIInfo(rssi + rssinoisefloor, rssi_scaled);
-  return rssi_scaled;
+
+  showRSSIInfo(rawrssi);
+  return rawrssi;
 }
 
 void channelOptimizer()
@@ -374,7 +393,7 @@ void channelOptimizer()
   changeChannel();
   delay(RSSISETTLETIME);
   rssi = readRSSI();
-  if (rssi <= currentrssi) {
+  if (getScaledRSSI(rssi) <= getScaledRSSI(currentrssi)) {
     debugprintln("optimizer: previous channel was better");
     currentfreq = prevfreq - 1;
     changeChannel();
@@ -389,7 +408,7 @@ void channelOptimizer()
 void checkRssiLock()
 {
   currentrssi = readRSSI();
-  if (currentrssi >= RSSIMINLOCK) { 
+  if ( (getScaledRSSI(currentrssi) >= RSSIMINLOCK) && (rssimax-rssimin >= RSSIMINRANGE) ) { 
     if (!rssilocked && !keepLock()) {
       channelOptimizer();
     }
@@ -459,25 +478,24 @@ void changeChannel()
   showText2(freq);
 }
 
-void setRSSINoiseFloor()
+void initRSSIRange()
 {
   int rssi = 0;
 
-  debugprintln("scanning rssi noise floor..."); 
+  debugprintln("rssi range init..."); 
 
   for (byte i = 0; i < sizeof(freqorder)/sizeof(byte); i = i + 2) {
     setBand(freqorder[i] / 10);
     setChannel(freqorder[i] - (currentband * 10));
     delay(RSSISETTLETIME);
-    rssi = readRSSI(true);
-    if (rssi < rssinoisefloor) {
-      rssinoisefloor = rssi;
-    }
+    readRSSI(true);
   }
 
   if (DEBUG) {
-    Serial.print("rssi noise floor: ");
-    Serial.println(rssinoisefloor);
+    Serial.print("initial rssi range: ");
+    Serial.print(rssimin);
+    Serial.print(" - ");
+    Serial.println(rssimax);
   }
 
   setBand(freqorder[0] / 10);
@@ -489,7 +507,7 @@ void showChanInfo()
 {
   char t[5];
 
-  snprintf(t, 5, "%c%d%02d", bandid[currentband-1], currentchan, currentrssi);
+  snprintf(t, 5, "%c%d%02d", bandid[currentband-1], currentchan, getScaledRSSI(currentrssi));
   for (byte i = 0; i < 4; i++) {
     if (i == 1 || (hold && i == 0)) {
       lcd.writeDigitAscii(i, t[i], true);
@@ -583,6 +601,4 @@ void setBand(byte band)
   }
   currentband = band;
 }
-
-
 
