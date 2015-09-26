@@ -63,7 +63,7 @@ unsigned long holdbhigh = 0;
 unsigned long nextbhigh = 0;
 
 const byte enabledbands[] = { 
-  1, 2, 3 };
+  1, 2, 3, 4 };
 
 const char *bandid = "DEAR"; // ImmersionRC (D), Boscam E, Boscam A, RaceBand
 
