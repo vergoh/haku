@@ -107,8 +107,8 @@ void setup()
   lcd2.clear();
   lcd2.writeDisplay();
 
-  showInfo();
   setBrightness();
+  showInfo();
   initRSSIRange();
   showSetup();
   delay(3000);
