@@ -42,7 +42,6 @@ At any point after the initial calibrations have been completed, pressing the HO
 
  * build diagram
  * more documentation
- * field test with >3 active transmitters
  * menu for active band selection
  * control for external recorder
 
