@@ -54,6 +54,8 @@ unsigned long locktime = 0;
 unsigned long lastrssicheck = 0;
 unsigned long channelchange = 0;
 
+boolean holdmode = false;
+
 boolean hold = false;
 boolean next = false;
 
@@ -118,6 +120,17 @@ void loop()
 {
   checkButtons();
 
+  if (hold) {
+    hold = false;
+    holdmode = !holdmode;
+    if (holdmode) {
+      debugprintln("hold enabled");
+    }
+    else {
+      debugprintln("hold disabled");
+    }
+  }
+
   if (next) {
     next = false;
     locktime = 0;
@@ -129,12 +142,12 @@ void loop()
     return;
   }
 
-  if ( (rssilocked || keepLock() || hold) && (millis()-lastrssicheck < RSSICHECKINTERVAL) ) {
+  if ( (rssilocked || keepLock() || holdmode) && (millis()-lastrssicheck < RSSICHECKINTERVAL) ) {
     return;
   }
 
   checkRssiLock();
-  if ( !rssilocked && !keepLock() && !hold ) {
+  if ( !rssilocked && !keepLock() && !holdmode ) {
     scanAnimation();
     changeChannel();
   }
@@ -218,13 +231,8 @@ void checkButtons()
   // "hold" button, pin low when pressed
   if (digitalRead(HOLDBPIN) == LOW) {
     if (holdbstate && (millis()-holdbhigh > BUTTONPRESSTIME)) {
-      hold = !hold;
-      if (hold) {
-        debugprintln("hold enabled");
-      } 
-      else {
-        debugprintln("hold disabled");
-      }
+      hold = true;
+      debugprintln("hold button pressed");
       while(true) {
         if (digitalRead(HOLDBPIN) == HIGH) {
           break; 
@@ -331,7 +339,7 @@ void showRSSIInfo(int rssi)
   if (!DEBUG) {
     return;
   }
-  if (rssilocked || hold) {
+  if (rssilocked || holdmode) {
     snprintf(buffer, 5, "%4d", rssi);
     showText2(buffer);
   }
@@ -377,7 +385,7 @@ void channelOptimizer()
   int rssi;
   byte prevfreq;
 
-  if (hold) {
+  if (holdmode) {
     return; 
   }
 
@@ -509,7 +517,7 @@ void showChanInfo()
 
   snprintf(t, 5, "%c%d%02d", bandid[currentband-1], currentchan, getScaledRSSI(currentrssi));
   for (byte i = 0; i < 4; i++) {
-    if (i == 1 || (hold && i == 0)) {
+    if (i == 1 || (holdmode && i == 0)) {
       lcd.writeDigitAscii(i, t[i], true);
     } 
     else{
