@@ -36,7 +36,7 @@
 #define BUTTONPRESSTIME 50
 
 #define MAJORVERSION '1'
-#define MINORVERSION '2'
+#define MINORVERSION '3'
 
 Adafruit_AlphaNum4 lcd = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 lcd2 = Adafruit_AlphaNum4();
@@ -384,7 +384,7 @@ void channelOptimizer()
   showText("TUNE");
   debugprintln("optimizing...");
   // nothing past highest frequency
-  if (currentfreq == sizeof(freqorder)/sizeof(int)-1) {
+  if (currentfreq == sizeof(freqorder)/sizeof(byte)-1) {
     debugprintln("optimizer: at end of frequency list");
     return; 
   }
@@ -459,7 +459,7 @@ void changeChannel()
   byte band;
 
   currentfreq++;
-  if (currentfreq >= sizeof(freqorder)/sizeof(byte)-1) {
+  if (currentfreq >= sizeof(freqorder)/sizeof(byte)) {
     currentfreq = 0; 
   } 
 
