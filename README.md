@@ -9,6 +9,7 @@ A 5.8 GHz video scanner receiver using FatShark race band receiver module with t
  * band, channel number, channel frequency and relative rssi display
  * channel hold mode regardless of rssi
  * automatic display brightness selection
+ * menu for active band selection
 
 ## Why
 
@@ -42,6 +43,5 @@ At any point after the initial calibrations have been completed, pressing the HO
 
  * build diagram
  * more documentation
- * menu for active band selection
  * control for external recorder
 

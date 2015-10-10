@@ -34,9 +34,10 @@
 #define CHANSPERBAND 8
 
 #define BUTTONPRESSTIME 50
+#define BUTTONLONGPRESSTIME 1000
 
 #define MAJORVERSION '1'
-#define MINORVERSION '3'
+#define MINORVERSION '4'
 
 Adafruit_AlphaNum4 lcd = Adafruit_AlphaNum4();
 Adafruit_AlphaNum4 lcd2 = Adafruit_AlphaNum4();
@@ -57,6 +58,7 @@ unsigned long channelchange = 0;
 boolean holdmode = false;
 
 boolean hold = false;
+boolean holdlong = false;
 boolean next = false;
 
 boolean holdbstate = false;
@@ -64,8 +66,8 @@ boolean nextbstate = false;
 unsigned long holdbhigh = 0;
 unsigned long nextbhigh = 0;
 
-const byte enabledbands[] = { 
-  1, 2, 3, 4 };
+boolean enabledbands[] = {
+  true, true, true, true };
 
 const char *bandid = "DEAR"; // ImmersionRC (D), Boscam E, Boscam A, RaceBand
 
@@ -119,24 +121,7 @@ void setup()
 void loop()
 {
   checkButtons();
-
-  if (hold) {
-    hold = false;
-    holdmode = !holdmode;
-    if (holdmode) {
-      debugprintln("hold enabled");
-    }
-    else {
-      debugprintln("hold disabled");
-    }
-  }
-
-  if (next) {
-    next = false;
-    locktime = 0;
-    lastrssicheck = 0;
-    changeChannel();
-  }
+  reactToButtons();
 
   if (millis()-channelchange < RSSISETTLETIME) {
     return;
@@ -179,7 +164,7 @@ void showSetup()
   char buffer[5];
 
   chancount = getChanCount();
-  snprintf(buffer, 5, "%02dch", chancount);
+  snprintf(buffer, 5, "%2dch", chancount);
   showText(buffer);
 
   snprintf(buffer, 5, "____");
@@ -235,7 +220,11 @@ void checkButtons()
       debugprintln("hold button pressed");
       while(true) {
         if (digitalRead(HOLDBPIN) == HIGH) {
-          break; 
+          if (millis()-holdbhigh > BUTTONLONGPRESSTIME) {
+            hold = false;
+            holdlong = true;
+          }
+          break;
         }
         delay(20);
       }
@@ -269,6 +258,97 @@ void checkButtons()
     nextbstate = false;
     nextbhigh = millis();
   }
+}
+
+void reactToButtons()
+{
+  if (holdlong) {
+    holdlong = false;
+    menu();
+  }
+
+  if (hold) {
+    hold = false;
+    holdmode = !holdmode;
+    if (holdmode) {
+      debugprintln("hold enabled");
+    }
+    else {
+      debugprintln("hold disabled");
+    }
+  }
+
+  if (next) {
+    next = false;
+    locktime = 0;
+    lastrssicheck = 0;
+    changeChannel();
+  }
+}
+
+void menu()
+{
+  unsigned long showtime = 0;
+  boolean shown = false;
+  byte index = 0;
+  char buffer[5];
+
+  showText2("MENU");
+
+  while (true) {
+    checkButtons();
+
+    if (holdlong) {
+      holdlong = false;
+      if (getChanCount() > 0) {
+        break;
+      }
+    }
+    if (hold) {
+      hold = false;
+      enabledbands[index] = !enabledbands[index];
+    }
+    if (next) {
+      next = false;
+      index++;
+      if (index >= 4) {
+        index = 0;
+      }
+    }
+
+    if (millis()-showtime > 500) {
+      shown = !shown;
+      snprintf(buffer, 5, "____");
+      for (byte i = 0; i < 4; i++) {
+        if (i == index && !shown) {
+          buffer[i] = ' ';
+        }
+        else if (isBandEnabled(i+1)) {
+          buffer[i] = bandid[i];
+        }
+      }
+      showText(buffer);
+      showtime = millis();
+    }
+  }
+
+  // reset status
+  rssimin = 1024;
+  rssimax = 0;
+  currentfreq = 0;
+  currentband = 0;
+  currentchan = 0;
+  currentrssi = 0;
+  scanindex = 0;
+  rssilocked = false;
+  locktime = 0;
+  lastrssicheck = 0;
+  channelchange = 0;
+  holdmode = false;
+
+  // recalibrate
+  showSetup();
+  initRSSIRange();
 }
 
 void showText(char *buffer)
@@ -453,12 +533,7 @@ byte getChanCount()
 
 boolean isBandEnabled(byte band)
 {
-  for (byte i = 0; i < sizeof(enabledbands)/sizeof(byte); i++) {
-    if (enabledbands[i] == band) {
-      return true;         
-    }
-  } 
-  return false;
+  return enabledbands[band-1];
 }
 
 void changeChannel()
